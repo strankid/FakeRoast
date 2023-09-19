@@ -4,6 +4,8 @@ import numpy as np
 from math import sqrt
 import pdb
 import mmh3
+import code
+
 try:
     from .Mapper_v2 import *
 except:
@@ -85,7 +87,9 @@ class FakeRoast(nn.Module):
                 self.IDX = idx_circ(W_shape, N, seed) % self.wsize
             else:
                 raise NotImplementedError
+        
         self.G = nn.Parameter(torch.randint(0, 2, size=W_shape, dtype=torch.float, generator=gen)*2 - 1, requires_grad=False)
+
         #print(mapper_args)
         #print(self.IDX.view(-1)[0:5])
         #print(self.G.view(-1)[0:5])
@@ -129,7 +133,7 @@ class FakeRoast(nn.Module):
 
 
 class FakeRoastLinear(nn.Module):
-    def __init__(self, input, output, bias, is_global, weight, init_scale, compression, test=False, matrix_mode="random", seed=1024, req_scale=None, mapper_args=None):
+    def __init__(self, input, output, bias, is_global, weight, init_scale, compression, test=False, matrix_mode="random", seed=1024, req_scale=None, mapper_args=None, partial = None, original_weight = None, original_bias = None):
         super(FakeRoastLinear, self).__init__()
         self.W_shape = (output, input)
         self.idim = input
@@ -139,6 +143,7 @@ class FakeRoastLinear(nn.Module):
         self.test = test
         self.matrix_mode = matrix_mode
         self.seed = seed
+        self.mode = partial
 
         if is_global == False:
             init_scale = 1/sqrt(self.idim)
@@ -159,17 +164,34 @@ class FakeRoastLinear(nn.Module):
         if bias:
             self.bias = nn.Parameter(torch.zeros(
                 self.odim, dtype=torch.float), requires_grad=True)
+        if self.mode:
+            self.original_weight = original_weight
+            self.bias = original_bias          
+            self.offset = -1
 
     def forward(self, x):
-        W = self.WHelper() * self.scale
-        x = nn.functional.linear(x, W, self.bias)
-        return x
+        if  not self.mode or self.mode == "roasted":
+            W = self.WHelper() * self.scale
+            x = nn.functional.linear(x, W, self.bias)
+            return x
+        elif self.mode == "pending":
+            W = self.original_weight
+            x = nn.functional.linear(x, W, self.bias)
+            return x
+        else:
+            W1 = self.WHelper() * self.scale
+            W2 = self.original_weight
+            W = torch.cat((W1.flatten()[:self.offset+1], W2.flatten()[self.offset+1:]))
+            W = W.view(self.W_shape)
+
+            x = nn.functional.linear(x, W, self.bias) 
+            return x
 
     def __repr__(self):
         if self.test:
             return "FakeRoastLinearTESTLinearIDX(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={})".format(self.idim, self.odim, self.is_global, self.scale, self.compression, self.test, self.matrix_mode)
         else:
-            return "FakeRoastLinear(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={}, seed={})".format(self.idim, self.odim, self.is_global, self.scale, self.compression, self.test, self.matrix_mode, self.seed)
+            return "FakeRoastLinear(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={}, seed={}, mode={})".format(self.idim, self.odim, self.is_global, self.scale, self.compression, self.test, self.matrix_mode, self.seed, self.mode)
 
 
 class FakeRoastConv2d(nn.Module):
@@ -190,7 +212,10 @@ class FakeRoastConv2d(nn.Module):
                     matrix_mode="random",
                     seed = 2023,
                     req_scale = None,
-                    mapper_args = None):
+                    mapper_args = None,
+                    partial = None, 
+                    original_weight = None, 
+                    original_bias = None):
         super(FakeRoastConv2d, self).__init__()
 
         if type(kernel_size) == int:
@@ -209,9 +234,10 @@ class FakeRoastConv2d(nn.Module):
         self.test = test
         self.matrix_mode = matrix_mode
         self.seed = seed
+        self.mode = partial
         
 
-        W_shape = (out_channels, int(in_channels/groups),
+        self.W_shape = (out_channels, int(in_channels/groups),
                    kernel_size[0], kernel_size[1])
 
         k = 1.0 * groups / (in_channels * np.prod(kernel_size))
@@ -220,7 +246,7 @@ class FakeRoastConv2d(nn.Module):
 
         if mapper_args is not None:
             mapper_args["mode"] = "general"
-        self.WHelper = FakeRoast(W_shape, is_global, weight, init_scale, compression, test=test,
+        self.WHelper = FakeRoast(self.W_shape, is_global, weight, init_scale, compression, test=test,
                         matrix_mode=matrix_mode,
                         seed=seed, mapper_args=mapper_args)
         
@@ -231,18 +257,35 @@ class FakeRoastConv2d(nn.Module):
         self.bias = None
         if self.is_bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
+        if self.mode:
+            self.original_weight = original_weight
+            self.bias = original_bias
+            self.offset = -1
 
     def forward(self, x):
-        W = self.WHelper() * self.scale
-        x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride,
-                                       padding=self.padding, dilation=self.dilation, groups=self.groups)
-        return x
+        if  not self.mode or self.mode == "roasted":
+            W = self.WHelper() * self.scale
+            x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+            return x
+        elif self.mode == "pending":
+            W = self.original_weight
+            x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+            return x
+        else:
+            W1 = self.WHelper() * self.scale
+            W2 = self.original_weight
+            W = torch.cat((W1.flatten()[:self.offset+1], W2.flatten()[self.offset+1:]))
+            W = W.view(self.W_shape)
+
+            x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+            return x
+
 
     def __repr__(self):
         if self.test:
             return "FakeRoastConv2dTESTLinearIDX(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={})".format(self.in_channels, self.out_channels, self.is_global, self.scale, self.compression, self.test, self.matrix_mode)
         else:
-            return "FakeRoastConv2d(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={}, seed={})".format(self.in_channels, self.out_channels, self.is_global, self.scale, self.compression, self.test, self.matrix_mode, self.seed)
+            return "FakeRoastConv2d(in={}, out={}, global={}, scale={}, compression={}, testLinearIDX={}, matrix_mode={}, seed={}, mode={})".format(self.in_channels, self.out_channels, self.is_global, self.scale, self.compression, self.test, self.matrix_mode, self.seed, self.mode)
 
 class FakeRoastEmbedding(nn.Module):
     def __init__(self,
