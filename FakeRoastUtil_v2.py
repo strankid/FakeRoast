@@ -10,6 +10,10 @@
 '''
 import torch
 import copy
+import sys
+sys.path.append('Synaptic-Flow')
+import Layers
+
 try:
     from .FakeRoast import *
 except:
@@ -75,8 +79,8 @@ class ModelPrinter(ModelParser):
 
 class Roastable:
     def __init__(self, module_limit_size=None, verbose=NONE):
-        self.LINEAR = [torch.nn.Linear, torch.nn.modules.Linear]
-        self.CONV2D = [torch.nn.Conv2d, torch.nn.modules.Conv2d]
+        self.LINEAR = [torch.nn.Linear, torch.nn.modules.Linear, Layers.layers.Linear]
+        self.CONV2D = [torch.nn.Conv2d, torch.nn.modules.Conv2d, Layers.layers.Conv2d]
         self.EMBEDDING = [torch.nn.Embedding, torch.nn.modules.Embedding]
         self.module_limit_size=module_limit_size
         self.verbose=verbose
@@ -298,7 +302,7 @@ class ModelRoaster(ModelParser, Roastable):
    
 
 class ModelRoasterGradScaler(ModelRoaster):
-    def __init__(self, model, roast_global, sparsity, module_limit_size=None, verbose=NONE, init_std=0.04, scaler_mode="v1", mapper_args=None, partial = "pending", k=-1, init_seed = 1):
+    def __init__(self, model, roast_global, sparsity, module_limit_size=None, verbose=NONE, init_std=0.04, scaler_mode="v3", mapper_args=None, partial = "pending", k=-1, init_seed = 1):
         super(ModelRoasterGradScaler, self).__init__(model, roast_global, sparsity, module_limit_size=None, verbose=NONE, init_std=init_std,
                                                      mapper_args=mapper_args, partial=partial, init_seed=init_seed)
         assert(roast_global) # this should be defined only for roast_global
@@ -306,10 +310,12 @@ class ModelRoasterGradScaler(ModelRoaster):
         self.count = torch.zeros_like(self.roast_array)
         self.update_count = torch.zeros_like(self.roast_array).cuda()
         self.aggregate_scale = torch.zeros_like(self.roast_array)
+        self.aggregate_scale_partial = torch.zeros_like(self.roast_array).cuda()
         self.partial = partial
         self.k = k
 
 
+    ## adapt this function for your case
     def lambda_func(self, state_dict):
         attr = state_dict['target_attr']
         name = state_dict['name']
@@ -359,7 +365,7 @@ class ModelRoasterGradScaler(ModelRoaster):
         start_step = self.k+1
         end_step = self.k+step
 
-        if self.k >= self.original_roastable_params:
+        if self.k >= self.original_roastable_params-1:
             raise Exception(f"{step} number of params not available to roast. {self.original_roastable_params - self.k - 1} params left")
         elif self.k + step >= self.original_roastable_params:
             end_step = self.original_roastable_params-1
@@ -383,16 +389,19 @@ class ModelRoasterGradScaler(ModelRoaster):
 
             roast_weights = roast_weights*self.update_count + torch.zeros_like(roast_weights).scatter_add_(0, roast_index, layer_G[layer_index]*original_weights[layer_index]/layer_scale)
             self.update_count.scatter_add_(0, roast_index, torch.ones_like(roast_index, dtype=torch.float32))
+            self.aggregate_scale_partial.scatter_add_(0, roast_index, layer_scale*torch.ones_like(roast_index, dtype=torch.float32))
             self.layers[p].WHelper.weight.data = (roast_weights/self.update_count).nan_to_num(0)
+            print("number of collisions: ", len(self.update_count[self.update_count > 1]))
 
             if end_step + 1 < self.offsets[p+1]:
                 self.layers[p].mode = "roasting"
                 self.layers[p].offset = end_step - self.offsets[p]
             else:
                 self.layers[p].mode = "roasted"
+                self.layers[p].original_weight = None
 
             start_step = self.offsets[p+1]
-        self.k += step
+        self.k = end_step
 
 class RoastGradScaler:
     def __init__(self):
@@ -402,8 +411,9 @@ class RoastGradScaler:
         if not('roast_array' in dir(model)):
             return
 
-        for p in model.parameters():
+        for p in model.parameters(): 
             if (p.requires_grad) and (p.grad is not None) and '_roast_grad_scaler' in dir(p):
                 p._roast_grad_scaler = p._roast_grad_scaler.to(p.device)
-                p.grad = p.grad / (1e-6+p._roast_grad_scaler)
+                # p.grad = p.grad / (1e-6+p._roast_grad_scaler)
+                p.grad = p.grad / (p._roast_grad_scaler)
 

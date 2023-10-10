@@ -173,19 +173,16 @@ class FakeRoastLinear(nn.Module):
         if  not self.mode or self.mode == "roasted":
             W = self.WHelper() * self.scale
             x = nn.functional.linear(x, W, self.bias)
-            return x
         elif self.mode == "pending":
             W = self.original_weight
             x = nn.functional.linear(x, W, self.bias)
-            return x
         else:
             W1 = self.WHelper() * self.scale
             W2 = self.original_weight
             W = torch.cat((W1.flatten()[:self.offset+1], W2.flatten()[self.offset+1:]))
             W = W.view(self.W_shape)
-
             x = nn.functional.linear(x, W, self.bias) 
-            return x
+        return x
 
     def __repr__(self):
         if self.test:
@@ -266,20 +263,19 @@ class FakeRoastConv2d(nn.Module):
         if  not self.mode or self.mode == "roasted":
             W = self.WHelper() * self.scale
             x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
-            return x
+            
         elif self.mode == "pending":
             W = self.original_weight
             x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
-            return x
+            
         else:
             W1 = self.WHelper() * self.scale
             W2 = self.original_weight
             W = torch.cat((W1.flatten()[:self.offset+1], W2.flatten()[self.offset+1:]))
             W = W.view(self.W_shape)
-
             x = torch.nn.functional.conv2d(x, W, bias=self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
-            return x
-
+    
+        return x    
 
     def __repr__(self):
         if self.test:
