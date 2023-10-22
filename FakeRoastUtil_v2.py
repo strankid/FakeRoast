@@ -395,8 +395,8 @@ class ModelRoasterGradScalerPartial(ModelRoaster):
                                                      mapper_args=mapper_args, partial=partial, init_seed=init_seed)
         assert(roast_global) # this should be defined only for roast_global
         self.scaler_mode = scaler_mode
-        self.count = torch.zeros_like(self.roast_array).cuda()
-        self.aggregate2_scale = torch.zeros_like(self.roast_array).cuda()
+        self.count = torch.zeros_like(self.roast_array)
+        self.aggregate2_scale = torch.zeros_like(self.roast_array)
         self.partial = partial
         self.boundary = -1
         self.distill_epochs = distill_epochs
@@ -425,7 +425,7 @@ class ModelRoasterGradScalerPartial(ModelRoaster):
         self.roast_array._roast_grad_scaler = self.compute_roast_grad_scale()
         return self.model
     
-    def update_boundary(self, epoch, itr, epoch_itr):
+    def update_boundary(self, epoch, itr, epoch_itr, device):
         total_iterations = self.distill_epochs * epoch_itr
         spent = epoch*epoch_itr + itr + 1
         target = min(self.original_roastable_params, int(self.original_roastable_params * spent / total_iterations))
@@ -460,12 +460,14 @@ class ModelRoasterGradScalerPartial(ModelRoaster):
 
         for p in range(i, j+1):
             layerOffset = self.offsets[p]
-            original_weights = self.layers[p].original_weight.data.flatten().cuda()
-            roast_weights = self.layers[p].WHelper.weight.data.cuda()
+            original_weights = self.layers[p].original_weight.data.flatten().to(device)
+            roast_weights = self.layers[p].WHelper.weight.data.to(device)
             layer_scale = self.layers[p].scale
-            layer_G = self.layers[p].WHelper.G.flatten().cuda()
-            layer_index = torch.tensor(range(start_step-layerOffset, min(end_step + 1 - layerOffset, self.offsets[p+1]-layerOffset))).cuda()
-            roast_index = self.layers[p].WHelper.IDX.flatten()[layer_index].cuda()
+            layer_G = self.layers[p].WHelper.G.flatten().to(device)
+            layer_index = torch.tensor(range(start_step-layerOffset, min(end_step + 1 - layerOffset, self.offsets[p+1]-layerOffset))).to(device)
+            roast_index = self.layers[p].WHelper.IDX.flatten()[layer_index].to(device)
+            self.count = self.count.to(device)
+            self.aggregate2_scale = self.aggregate2_scale.to(device)
 
             roast_weights = roast_weights*self.count + torch.zeros_like(roast_weights).scatter_add_(0, roast_index, layer_G[layer_index]*original_weights[layer_index]/layer_scale)
             self.count = self.count.scatter_add_(0, roast_index, torch.ones_like(roast_index, dtype=torch.float32))
