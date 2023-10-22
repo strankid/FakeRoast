@@ -274,7 +274,9 @@ class ModelRoaster(ModelParser, Roastable):
                             target_attr.sparse,
                             matrix_mode= "mapper" if (mapper_args is not None) else "random",
                             req_scale = torch.std(target_attr.weight).item(),
-                            mapper_args = mapper_args) # missing seed? # TODO original weights pass
+                            mapper_args = mapper_args,
+                            partial = self.partial,
+                            original_weight = target_attr.weight if self.partial else None) # missing seed?
             self.global_offset = self.global_offset + target_attr.weight.numel()
             self.layers.append(new_attr)
             self.offsets.append(self.global_offset)

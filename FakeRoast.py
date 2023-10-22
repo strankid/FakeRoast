@@ -292,8 +292,11 @@ class FakeRoastEmbedding(nn.Module):
                  norm_type=2.0,
                  scale_grad_by_freq=False,
                  sparse=False,
+                 matrix_mode="random",
                  req_scale = None,
-                 mapper_args = None):
+                 mapper_args = None,
+                 partial = None, 
+                 original_weight = None):
         super(FakeRoastEmbedding, self).__init__()
         W_shape = (num_embeddings, embedding_dim)
         if is_global == False:
@@ -318,14 +321,26 @@ class FakeRoastEmbedding(nn.Module):
         self.norm_type = norm_type
         self.scale_grad_by_freq = scale_grad_by_freq
         self.sparse = sparse
+        self.mode = partial
+        if self.mode:
+            self.original_weight = original_weight    
+            self.offset = -1
 
     def forward(self, x):
-        #W = self.WHelper() * self.scale
-        #return nn.functional.embedding(x, W, self.padding_idx, self.max_norm, self.norm_type, self.scale_grad_by_freq, self.sparse)
-        W = self.WHelper.forward_partial(x) * self.scale
+        if  not self.mode or self.mode == "roasted":
+            W = self.WHelper.forward_partial(x) * self.scale
+        elif self.mode == "pending":
+            W =  nn.functional.embedding(x, self.original_weight, self.padding_idx, self.max_norm, \
+                    self.norm_type, self.scale_grad_by_freq, self.sparse)
+        else:
+            W1 = self.WHelper.forward_partial(x) * self.scale
+            W2 = nn.functional.embedding(x, self.original_weight, self.padding_idx, self.max_norm, \
+                    self.norm_type, self.scale_grad_by_freq, self.sparse)
+            W = torch.cat((W1.flatten()[:self.offset+1], W2.flatten()[self.offset+1:]))
+            W = W.view(x.shape[0], x.shape[1], self.embedding_dim)
         return W
     def __repr__(self):
-            return "FakeRoastEmbedding(num_embeddings={}, embedding_dim={}, compression={}, seed={})".format(self.num_embeddings, self.embedding_dim, self.compression, self.WHelper.seed )
+            return "FakeRoastEmbedding(num_embeddings={}, embedding_dim={}, compression={}, seed={}, mode={})".format(self.num_embeddings, self.embedding_dim, self.compression, self.WHelper.seed, self.mode )
 
 class FakeRoastLSTM(nn.Module):
     def __init__(self,
